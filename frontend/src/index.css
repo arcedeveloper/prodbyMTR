@@ -1,0 +1,80 @@
+@import "tailwindcss";
+
+/* Colores y tipografías de la marca. Se usan como clases: bg-noche, text-suave, font-titulo, etc. */
+@theme {
+  --color-noche: #1a1424;
+  --color-panel: #241b31;
+  --color-panel-alto: #2e2340;
+  --color-tiempo: #352949;
+  --color-linea: #3e3252;
+  --color-texto: #f4eef8;
+  --color-suave: #b3a5c4;
+  --color-apagado: #7d6f8f;
+
+  /* Color principal de botones y detalles */
+  --color-acento: #2ee8c4;
+  --color-acento-claro: #7af3dc;
+
+  /* Canales del secuenciador; también identifican cada producto */
+  --color-kick: #ff5c7a;
+  --color-snare: #2ee8c4;
+  --color-hat: #4cc9f0;
+  --color-perc: #b57bff;
+
+  --font-titulo: "Anybody", "Arial Black", sans-serif;
+  --font-texto: "Figtree", ui-sans-serif, system-ui, sans-serif;
+
+  --animate-barra: barra 0.9s ease-in-out infinite;
+  @keyframes barra {
+    0%, 100% { height: 25%; }
+    50% { height: 100%; }
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 80px;
+  }
+
+  body {
+    @apply bg-noche font-texto text-[1.0625rem] leading-[1.55] text-texto antialiased;
+  }
+
+  :focus-visible {
+    @apply rounded outline-3 outline-offset-3 outline-acento;
+  }
+
+  dialog::backdrop {
+    background: rgb(10 6 16 / 0.72);
+    backdrop-filter: blur(3px);
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Ancho de página con margen lateral */
+@utility contenedor {
+  width: min(100% - 2 * clamp(16px, 4vw, 40px), 1180px);
+  margin-inline: auto;
+}
+
+/* Títulos con la tipografía ancha */
+@utility titulo {
+  font-family: var(--font-titulo);
+  font-weight: 800;
+  font-stretch: 120%;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  text-wrap: balance;
+}
