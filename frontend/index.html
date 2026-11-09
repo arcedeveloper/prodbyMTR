@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ProdByMTR | Producción Musical</title>
+    <script src="https://js.stripe.com/v3/"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #000000;
+            color: #ffffff;
+            font-family: 'Inter', 'Arial', sans-serif;
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .header {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            padding: 1.5rem 4rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0,0,0,0.9);
+            z-index: 1000;
+            backdrop-filter: blur(10px);
+        }
+
+        .logo {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #ffffff;
+            letter-spacing: 1px;
+        }
+
+        .nav a {
+            color: #ffffff;
+            text-decoration: none;
+            margin-left: 2rem;
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: color 0.3s ease;
+        }
+
+        .nav a:hover {
+            color: #cccccc;
+        }
+
+        .hero {
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 0 2rem;
+            background: linear-gradient(45deg, rgba(0,0,0,0.7) 0%, rgba(80,80,80,0.5) 100%), url('background.png');
+            background-size: contain;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-color: #000;
+        }
+
+        .hero-content h1 {
+            font-size: 4rem;
+            font-weight: 300;
+            margin-bottom: 1rem;
+            letter-spacing: -2px;
+            line-height: 1.1;
+        }
+
+        .hero-content p {
+            font-size: 1.2rem;
+            color: #cccccc;
+            margin-bottom: 2rem;
+            letter-spacing: 0.5px;
+        }
+
+        .cta-button {
+            display: inline-block;
+            padding: 1rem 2.5rem;
+            background: #ffffff;
+            color: #000000;
+            text-decoration: none;
+            border-radius: 2px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.9rem;
+        }
+
+        .cta-button:hover {
+            background: #e6e6e6;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(255,255,255,0.1);
+        }
+
+        .products {
+            padding: 4rem 4rem;
+            background: #0a0a0a;
+        }
+
+        #about.products {
+            padding-top: 1rem;
+        }
+
+        .section-title {
+            font-size: 2.5rem;
+            text-align: center;
+            margin-bottom: 3rem;
+            font-weight: 300;
+            letter-spacing: -1px;
+        }
+
+        .product-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .product-card {
+            background: #1a1a1a;
+            padding: 2rem;
+            border-radius: 8px;
+            transition: all 0.3s ease;
+            border: 1px solid #333333;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .product-card:hover {
+            transform: translateY(-5px);
+            border-color: #555555;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        .product-image {
+            width: 100%;
+            height: 180px;
+            object-fit: cover;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #333;
+            background: linear-gradient(45deg, #222, #444);
+        }
+
+        .product-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: #ffffff;
+            font-weight: 500;
+        }
+
+        .product-card p {
+            color: #cccccc;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+            flex-grow: 1;
+        }
+
+        .product-card .price {
+            font-size: 1.8rem;
+            color: #ffffff;
+            margin: 1.5rem 0 0.5rem 0;
+            font-weight: 600;
+        }
+
+        .price-usd {
+            font-size: 0.9rem;
+            color: #888888;
+            margin-top: 0.5rem;
+            margin-bottom: 1.5rem;
+            font-weight: 400;
+            line-height: 1.4;
+        }
+
+        .buy-button {
+            display: inline-block;
+            width: 100%;
+            padding: 1rem 2rem;
+            background: #635bff;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+            text-align: center;
+            font-weight: 500;
+            border: none;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-size: 0.9rem;
+            margin-top: auto;
+        }
+
+        .buy-button:hover {
+            background: #5a54d9;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(99, 91, 255, 0.3);
+        }
+
+        .buy-button:disabled {
+            background: #666;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .popular-badge {
+            background: linear-gradient(45deg, #ff6b00, #ff8c00);
+            color: #000000;
+            padding: 0.3rem 1rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            display: inline-block;
+            margin-bottom: 1rem;
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            white-space: nowrap;
+            z-index: 1;
+        }
+
+        .service-card {
+            border: 1px solid #444444;
+        }
+
+        .service-card .price {
+            color: #4CAF50;
+        }
+
+        /* Modal de carga */
+        #loading-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.95);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            flex-direction: column;
+        }
+
+        .spinner-large {
+            border: 4px solid #333;
+            border-left: 4px solid #635bff;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            color: white;
+            font-size: 1.2rem;
+            margin-bottom: 10px;
+        }
+
+        .loading-subtext {
+            color: #aaa;
+            font-size: 0.9rem;
+            text-align: center;
+            max-width: 400px;
+            margin-bottom: 20px;
+            line-height: 1.4;
+        }
+
+        .loading-timer {
+            color: #635bff;
+            font-size: 1.5rem;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+
+        .loading-cancel {
+            background: transparent;
+            color: #ff6b6b;
+            border: 1px solid #ff6b6b;
+            padding: 8px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: all 0.3s;
+        }
+
+        .loading-cancel:hover {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        /* ===== FOOTER CORREGIDO ===== */
+        .footer {
+            background: #000000;
+            padding: 3rem 4rem;
+            text-align: center;
+            border-top: 1px solid #333;
+        }
+        
+        .social-links {
+            display: flex;
+            justify-content: center;
+            gap: 2rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+        
+        .social-links a {
+            color: #ffffff;
+            text-decoration: none;
+            font-size: 0.9rem;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+        }
+        
+        .social-links a:hover {
+            color: #cccccc;
+        }
+        
+        .copyright {
+            color: #888;
+            font-size: 0.9rem;
+            margin-top: 1rem;
+            line-height: 1.5;
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                padding: 1rem 2rem;
+            }
+            
+            .hero-content h1 {
+                font-size: 2.5rem;
+            }
+            
+            .products {
+                padding: 2rem 2rem;
+            }
+            
+            #about.products {
+                padding: 1rem 2rem 2rem 2rem;
+            }
+            
+            .product-grid {
+                grid-template-columns: 1fr;
+                gap: 1.5rem;
+            }
+            
+            .nav a {
+                margin-left: 1rem;
+                font-size: 0.8rem;
+            }
+            
+            .footer {
+                padding: 2rem 1rem;
+            }
+            
+            .social-links {
+                flex-direction: column;
+                gap: 1rem;
+                align-items: center;
+            }
+            
+            .social-links a {
+                width: 200px;
+                text-align: center;
+                padding: 0.8rem;
+            }
+            
+            .product-image {
+                height: 150px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="logo">Prod By MTR</div>
+        <nav class="nav">
+            <a href="#products">Productos</a>
+            <a href="#about">Servicios</a>
+            <a href="#contact">Contacto</a>
+        </nav>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-content">
+            <h1 class="glow-text">PRODUCCIÓN <br>MUSICAL</h1>
+            <p>Drumkits • Samples • Plantillas • Presets</p>
+            <a href="#products" class="cta-button">VER PRODUCTOS</a>
+        </div>
+    </section>
+
+    <!-- Productos -->
+    <section id="products" class="products">
+        <h2 class="section-title">PRODUCTOS</h2>
+        <div class="product-grid">
+            <!-- Producto 1 - DRUMKIT ESSENTIAL -->
+            <div class="product-card">
+                <div class="popular-badge">MÁS POPULAR</div>
+                <img src="images/sample-bateria-acustica.png" alt="Drumkit Essential" class="product-image">
+                <h3>DRUMKIT ESSENTIAL</h3>
+                <p>150+ sonidos premium seleccionados para tus producciones. Kicks, snares, hi-hats y percusión única.</p>
+                <div class="price">$25 USD</div>
+                <div class="price-usd">Pago único • Descarga inmediata</div>
+                <button class="buy-button" onclick="comprarProducto('drumkit-essential')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+
+            <!-- Producto 2 - VOCAL CHAIN TEMPLATE -->
+            <div class="product-card">
+                <img src="images/vocal-template.png" alt="Vocal Chain Template" class="product-image">
+                <h3>VOCAL CHAIN TEMPLATE</h3>
+                <p>Plantilla vocal completa con plugins nativos de FL Studio. EQ, compresión, delay y reverb incluidos.</p>
+                <div class="price">$17 USD</div>
+                <div class="price-usd">Pago único • Descarga inmediata</div>
+                <button class="buy-button" onclick="comprarProducto('vocal-template')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+
+            <!-- Producto 3 - PLANTILLAS FL STUDIO -->
+            <div class="product-card">
+                <img src="images/plantillas-fl.png" alt="Plantillas FL Studio" class="product-image">
+                <h3>PLANTILLAS FL STUDIO</h3>
+                <p>Estructuras profesionales listas para usar. Incluye 2 plantillas de (Mezcla + Mastering) y otra para Grabación.</p>
+                <div class="price">$29 USD</div>
+                <div class="price-usd">Pago único • Descarga inmediata</div>
+                <button class="buy-button" onclick="comprarProducto('plantillas-fl')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+
+            <!-- Producto 4 - CUMBIA 420 -->
+            <div class="product-card">
+                <div class="popular-badge" style="background: linear-gradient(45deg, #00ff88, #00ccff);">🔥 NUEVO</div>
+                <img src="images/pack-cumbia.png" alt="Cumbia 420 Drumkit" class="product-image">
+                <h3>CUMBIA 420 - DRUMKIT</h3>
+                <p>Sonidos auténticos de cumbia argentina/paraguaya. Gritos, acordeón samples, guitarras y percusión característica.</p>
+                <div class="price">$18 USD</div>
+                <div class="price-usd">Pago único • 150+ samples • Incluye presets</div>
+                <button class="buy-button" onclick="comprarProducto('cumbia-420')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+
+            <!-- Producto 5 - REGGAETON HITS -->
+            <div class="product-card">
+                <div class="popular-badge" style="background: linear-gradient(45deg, #ff0066, #ff00cc);">🎵 TOP</div>
+                <img src="images/pack-reggaeton.png" alt="Reggaeton Hits" class="product-image">
+                <h3>REGGAETON HITS - DRUMKIT</h3>
+                <p>Kicks potentes, snares punchy, hi-hats rolls y dembow patterns listos para usar. Sonido urbano profesional.</p>
+                <div class="price">$20 USD</div>
+                <div class="price-usd">Pago único • 200+ sounds • Patterns incluidos</div>
+                <button class="buy-button" onclick="comprarProducto('reggaeton-hits')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+
+            <!-- Producto 6 - TRAP ESSENTIALS -->
+            <div class="product-card">
+                <div class="popular-badge" style="background: linear-gradient(45deg, #ffaa00, #ff5500);">🎤 VOCALES</div>
+                <img src="images/pack-trap-essentials.png" alt="Trap Essentials" class="product-image">
+                <h3>TRAP ESSENTIALS - PACK</h3>
+                <p>808s distorsionados, hi-hats veloces, kicks sub-bass y adlibs. Ideal para trap latino y drill.</p>
+                <div class="price">$22 USD</div>
+                <div class="price-usd">Pago único • 808s exclusivos • Adlibs pack</div>
+                <button class="buy-button" onclick="comprarProducto('trap-essentials')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+
+            <!-- Producto 7 - SYNTHWAVE/POP -->
+            <div class="product-card">
+                <div class="popular-badge" style="background: linear-gradient(45deg, #9d00ff, #00aaff);">🌌 VINTAGE</div>
+                <img src="images/pack-synthwave-pop.png" alt="Synthwave & Pop" class="product-image">
+                <h3>SYNTHWAVE & POP - PACK</h3>
+                <p>Sintetizadores retro, pads atmosféricos, arpegios y leads melódicos. Perfecto para pop moderno y synthwave.</p>
+                <div class="price">$25 USD</div>
+                <div class="price-usd">Pago único • 100+ presets • MIDI patterns</div>
+                <button class="buy-button" onclick="comprarProducto('synthwave-pop')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+
+            <!-- Producto 8 - BUNDLE DE GÉNEROS -->
+            <div class="product-card">
+                <div class="popular-badge" style="background: linear-gradient(45deg, #ff0000, #ff8800);">💰 OFERTA</div>
+                <img src="images/pack-bundle-urbano.png" alt="Bundle Géneros" class="product-image">
+                <h3>BUNDLE DE GÉNEROS</h3>
+                <p>Todos los géneros en un solo pack: Cumbia, Reggaeton, Trap y Synthwave. 600+ samples y presets.</p>
+                <div class="price">$65 USD</div>
+                <div class="price-usd">Ahorras $20 • 4 en 1 • Descarga inmediata</div>
+                <button class="buy-button" onclick="comprarProducto('bundle-generos')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+
+            <!-- Producto 9 - BUNDLE COMPLETO -->
+            <div class="product-card">
+                <div class="popular-badge" style="background: linear-gradient(45deg, #00ff00, #008800);">🌟 MEGA</div>
+                <img src="images/bundle-completo-sonidos.png" alt="Bundle Completo" class="product-image">
+                <h3>BUNDLE COMPLETO</h3>
+                <p>TODOS nuestros productos en un solo pack con 40% de descuento. Todo lo que necesitás para producir.</p>
+                <div class="price">$99 USD</div>
+                <div class="price-usd">Ahorras $66 • 9 productos • Descarga inmediata</div>
+                <button class="buy-button" onclick="comprarProducto('bundle-completo')">
+                    COMPRAR AHORA
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Servicios -->
+    <section id="about" class="products">
+        <h2 class="section-title">SERVICIOS</h2>
+        <div class="product-grid">
+            <!-- Servicio 1 - PRESET VOCAL PERSONALIZADO -->
+            <div class="product-card service-card">
+                <div class="popular-badge" style="background: linear-gradient(45deg, #ff00ff, #cc00ff);">🎤 PERSONALIZADO</div>
+                <h3>PRESET VOCAL PERSONALIZADO</h3>
+                <p>Creo un preset EXCLUSIVO para TU voz. Analizo tu tipo de voz, timbre y estilo para crear una cadena de efectos perfecta para vos.</p>
+                <div class="price">$45 USD</div>
+                <div class="price-usd">Preset personalizado • Instalación guiada • Revisión incluida</div>
+                <button class="buy-button" onclick="solicitarServicio('PRESET VOCAL PERSONALIZADO', 45)">SOLICITAR SERVICIO</button>
+            </div>
+
+            <!-- Servicio 2 - MEZCLA -->
+            <div class="product-card service-card">
+                <h3>MEZCLA</h3>
+                <p>Balance perfecto, ecualización, compresión y efectos. Tu canción sonará clara, poderosa y lista para streaming.</p>
+                <div class="price">$60 USD</div>
+                <div class="price-usd">Entrega en 3-5 días</div>
+                <button class="buy-button" onclick="solicitarServicio('MEZCLA', 60)">SOLICITAR SERVICIO</button>
+            </div>
+
+            <!-- Servicio 3 - MEZCLA + MASTERING -->
+            <div class="product-card service-card">
+                <div class="popular-badge">MÁS POPULAR</div>
+                <h3>MEZCLA + MASTERING</h3>
+                <p>Completo: mezcla balanceada + mastering final. Tu track listo para plataformas digitales con volumen competitivo.</p>
+                <div class="price">$79 USD</div>
+                <div class="price-usd">Paquete completo</div>
+                <button class="buy-button" onclick="solicitarServicio('MEZCLA + MASTERING', 79)">SOLICITAR SERVICIO</button>
+            </div>
+
+            <!-- Servicio 4 - MASTERING -->
+            <div class="product-card service-card">
+                <h3>MASTERING</h3>
+                <p>Proceso final para maximizar el volumen y calidad. Tu canción sonará comercial en todas las plataformas.</p>
+                <div class="price">$30 USD</div>
+                <div class="price-usd">Entrega en 1-2 días</div>
+                <button class="buy-button" onclick="solicitarServicio('MASTERING', 30)">SOLICITAR SERVICIO</button>
+            </div>
+
+            <!-- Servicio 5 - BEATS PERSONALIZADOS (NUEVO) -->
+            <div class="product-card service-card">
+                <div class="popular-badge" style="background: linear-gradient(45deg, #ff3366, #ff6633);">🎵 EXCLUSIVO</div>
+                <h3>BEATS PERSONALIZADOS</h3>
+                <p>Beat original hecho desde cero para tu proyecto. Trabajamos juntos en la idea, estructura, sonidos y mezcla final.</p>
+                <div class="price">$80 USD</div>
+                <div class="price-usd">Colaboración directa • Derechos de uso • Archivos stems</div>
+                <button class="buy-button" onclick="solicitarServicio('BEATS PERSONALIZADOS', 80)">SOLICITAR SERVICIO</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Modal de carga -->
+    <div id="loading-modal">
+        <div class="spinner-large"></div>
+        <div class="loading-text" id="loading-text">Preparando tu pago...</div>
+        <div class="loading-subtext" id="loading-subtext">
+            ⏳ El servidor puede tardar hasta 30 segundos.<br>
+            ¡Gracias por tu paciencia!
+        </div>
+        <div class="loading-timer" id="loading-timer">30</div>
+        <div class="loading-subtext">segundos restantes</div>
+        <button class="loading-cancel" onclick="cancelarPago()">Cancelar</button>
+    </div>
+    
+    <!-- Footer con ID para el enlace de Contacto -->
+    <footer class="footer" id="contact">
+        <div class="social-links">
+            <a href="https://wa.me/595983775018" target="_blank">WhatsApp</a>
+            <a href="https://instagram.com/matiasropy" target="_blank">Instagram</a>
+            <a href="https://tiktok.com/@matiasrodas_" target="_blank">TikTok</a>
+            <a href="mailto:matirodas50@gmail.com">Email</a>
+        </div>
+        <p class="copyright">&copy; 2025 César Matias Rodas Arce. Todos los derechos reservados.</p>
+    </footer>
+
+    <script>
+        // Stripe
+        const stripe = Stripe('pk_test_51SZ0af0187fYYBafTVsmPGg0WKEdgr8ofjq1aR6AtpSrtvBxDdKJDaKlpYJvvwcaT0IhnxBtAmdTEYlcdXEMTF4e008xT4tmBU');
+        
+        // Variables globales
+        let currentButton = null;
+        let originalButtonText = '';
+        let countdownInterval = null;
+        let controller = null;
+
+        // Mostrar/ocultar modal
+        function showLoadingModal() {
+            const modal = document.getElementById('loading-modal');
+            modal.style.display = 'flex';
+            let countdownTime = 30;
+            document.getElementById('loading-timer').textContent = countdownTime;
+            
+            countdownInterval = setInterval(() => {
+                countdownTime--;
+                document.getElementById('loading-timer').textContent = countdownTime;
+                if (countdownTime <= 10) {
+                    document.getElementById('loading-timer').style.color = '#ff6b6b';
+                }
+                if (countdownTime <= 0) {
+                    clearInterval(countdownInterval);
+                    document.getElementById('loading-text').textContent = 'Tiempo agotado';
+                    document.getElementById('loading-subtext').textContent = 'El servidor no responde. Por favor, intentá de nuevo.';
+                }
+            }, 1000);
+        }
+
+        function hideLoadingModal() {
+            const modal = document.getElementById('loading-modal');
+            modal.style.display = 'none';
+            if (countdownInterval) clearInterval(countdownInterval);
+            if (controller) controller.abort();
+        }
+
+        // Cancelar pago
+        function cancelarPago() {
+            hideLoadingModal();
+            if (currentButton) {
+                currentButton.disabled = false;
+                currentButton.textContent = originalButtonText;
+            }
+        }
+
+        // Función de compra OPTIMIZADA
+        async function comprarProducto(productId) {
+            // Guardar referencia al botón
+            currentButton = event.target;
+            originalButtonText = currentButton.textContent;
+            
+            // Deshabilitar botón
+            currentButton.disabled = true;
+            currentButton.textContent = '⏳ PROCESANDO...';
+            
+            // Mostrar modal de carga
+            showLoadingModal();
+            
+            // Configurar timeout
+            controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 35000);
+            
+            try {
+                // Real petición directa
+                const response = await fetch('https://prodbymtr-backend.onrender.com/api/crear-pago', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ productId }),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+                
+                if (!response.ok) {
+                    let errorMsg = `Error HTTP: ${response.status}`;
+                    if (response.status === 503 || response.status === 504) {
+                        errorMsg = 'El servidor está iniciando. Esperá 30 segundos e intentá de nuevo.';
+                    }
+                    throw new Error(errorMsg);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    document.getElementById('loading-text').textContent = 'Redirigiendo a Stripe...';
+                    
+                    // Redirigir a Stripe
+                    const result = await stripe.redirectToCheckout({
+                        sessionId: data.sessionId,
+                    });
+
+                    if (result.error) {
+                        throw new Error('Stripe: ' + result.error.message);
+                    }
+                } else {
+                    throw new Error(data.message || data.error || 'Error del servidor');
+                }
+            } catch (error) {
+                console.error('❌ Error:', error);
+                hideLoadingModal();
+                
+                // Mensajes amigables
+                let mensajeUsuario = error.message;
+                
+                if (error.name === 'AbortError') {
+                    mensajeUsuario = '⏳ El servidor está tardando en responder.\n\nSolución:\n1. Esperá 30 segundos\n2. Recargá la página\n3. Intentá de nuevo';
+                } else if (error.message.includes('Failed to fetch')) {
+                    mensajeUsuario = '🔌 Error de conexión. Verificá tu internet e intentá de nuevo.';
+                }
+                
+                alert(mensajeUsuario);
+                
+                // Restaurar botón
+                if (currentButton) {
+                    currentButton.disabled = false;
+                    currentButton.textContent = originalButtonText;
+                }
+            }
+        }
+
+        // Función para servicios mejorada
+        function solicitarServicio(nombreServicio, precio) {
+            const TU_NUMERO_WHATSAPP = '+595983775018';
+            const fecha = new Date().toLocaleDateString();
+            
+            let mensaje = '';
+            
+            if (nombreServicio === 'PRESET VOCAL PERSONALIZADO') {
+                mensaje = `🎤 *SOLICITUD DE PRESET VOCAL PERSONALIZADO - PRODUCCIÓN MUSICAL*\n\n📋 *Servicio:* ${nombreServicio}\n💰 *Precio:* $${precio} USD\n📅 *Fecha:* ${fecha}\n\n👤 *Mi información:*\n• 📧 Email: ___________\n• 📱 Teléfono: ___________\n• 🏷️ Nombre: ___________\n\n🎤 *Sobre mi voz:*\n• Tipo de voz (aguda/media/grave): ___________\n• Género musical: ___________\n• Referencias vocales: ___________\n• Plugins que uso: ___________\n\n🎶 *¿Qué busco en mi preset vocal?*\n• [ ] Más claridad\n• [ ] Más presencia\n• [ ] Efectos creativos\n• [ ] Compresión profesional\n• [ ] Automatizaciones\n• [ ] Otro: ___________\n\n📁 *Archivos a enviar:*\n• 1-2 pistas de tu voz (dry/wet)\n• Formato: WAV 24-bit\n• Tiempo: 30-60 segundos c/u\n\n💬 *Comentarios adicionales:*\n___________________\n\n¡Listo para crear tu preset único! Contactame para coordinar. ✨`;
+            } else if (nombreServicio === 'BEATS PERSONALIZADOS') {
+                mensaje = `🎵 *SOLICITUD DE BEATS PERSONALIZADOS - PRODUCCIÓN MUSICAL*\n\n📋 *Servicio:* ${nombreServicio}\n💰 *Precio:* $${precio} USD\n📅 *Fecha:* ${fecha}\n\n👤 *Mi información:*\n• 📧 Email: ___________\n• 📱 Teléfono: ___________\n• 🏷️ Nombre/Artista: ___________\n\n🎶 *Detalles del beat:*\n• Género musical: ___________\n• Referencias (artistas/canciones): ___________\n• BPM (si tenés preferencia): ___________\n• Tonalidad (si tenés preferencia): ___________\n\n🎹 *Elementos que quiero incluir:*\n• [ ] Melodía principal\n• [ ] Arreglos\n• [ ] Vocales (adlibs/hooks)\n• [ ] Percusión específica\n• [ ] Efectos de sonido\n• [ ] Otro: ___________\n\n📁 *Información adicional:*\n• ¿Ya tenés una idea o letra?: ___________\n• ¿Para qué proyecto es? (single/álbum/video): ___________\n• Fecha límite (si aplica): ___________\n\n💬 *Comentarios/ideas específicas:*\n___________________\n\n¡Listo para crear tu beat único! Contactame para coordinar. ✨`;
+            } else {
+                mensaje = `🎵 *SOLICITUD DE SERVICIO - PRODUCCIÓN MUSICAL*\n\n📋 *Servicio:* ${nombreServicio}\n💰 *Precio:* $${precio} USD\n📅 *Fecha:* ${fecha}\n\n👤 *Mi información:*\n• 📧 Email: ___________\n• 📱 Teléfono: ___________\n• 🏷️ Nombre: ___________\n\n🎶 *Detalles del proyecto:*\n• Género musical: ___________\n• Referencias: ___________\n• Fecha límite: ___________\n\n💬 *Comentarios adicionales:*\n___________________\n\nPor favor, contactame para coordinar los detalles. ¡Gracias! ✨`;
+            }
+
+            const mensajeCodificado = encodeURIComponent(mensaje);
+            const urlWhatsApp = `https://wa.me/${TU_NUMERO_WHATSAPP}?text=${mensajeCodificado}`;
+            
+            window.open(urlWhatsApp, '_blank');
+        }
+
+        // Prevenir que el botón quede "pegado"
+        window.addEventListener('pageshow', function() {
+            document.querySelectorAll('.buy-button').forEach(button => {
+                button.disabled = false;
+                if (button.textContent.includes('PROCESANDO')) {
+                    button.textContent = 'COMPRAR AHORA';
+                }
+            });
+            hideLoadingModal();
+        });
+
+        // Scroll effects
+        document.addEventListener('DOMContentLoaded', function() {
+            // Inicializar event listeners
+            document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+                anchor.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    const target = document.querySelector(this.getAttribute('href'));
+                    if (target) {
+                        target.scrollIntoView({ 
+                            behavior: 'smooth', 
+                            block: 'start'
+                        });
+                    }
+                });
+            });
+
+            // Scroll effects para header
+            const header = document.querySelector('.header');
+            window.addEventListener('scroll', function() {
+                const scrollY = window.scrollY;
+                if (scrollY > 100) {
+                    header.style.background = 'rgba(0,0,0,0.95)';
+                    header.style.padding = '1rem 4rem';
+                } else {
+                    header.style.background = 'rgba(0,0,0,0.9)';
+                    header.style.padding = '1.5rem 4rem';
+                }
+            });
+
+            // Animaciones iniciales
+            setTimeout(() => {
+                document.querySelectorAll('.product-card, .section-title').forEach(el => {
+                    el.style.opacity = '0';
+                    el.style.transform = 'translateY(20px)';
+                    el.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+                });
+                animarElementosAlScroll();
+            }, 100);
+
+            function animarElementosAlScroll() {
+                const elementos = document.querySelectorAll('.product-card, .section-title');
+                elementos.forEach(elemento => {
+                    const elementoTop = elemento.getBoundingClientRect().top;
+                    const windowHeight = window.innerHeight;
+                    if (elementoTop < windowHeight - 100) {
+                        elemento.style.opacity = '1';
+                        elemento.style.transform = 'translateY(0)';
+                    }
+                });
+            }
+            window.addEventListener('scroll', animarElementosAlScroll);
+        });
+    </script>
+</body>
+</html>
