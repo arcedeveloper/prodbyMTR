@@ -4,23 +4,32 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import Mailjet from 'node-mailjet';
 import pg from 'pg';
-const { Pool } = pg;
+import { productos } from './productos.js';
 
 dotenv.config();
 
-// ==================== CONFIGURACIÓN INICIAL ====================
+// ==================== CONFIGURACIÓN ====================
+const PORT = process.env.PORT || 3001;
+const FRONTEND_URL = (process.env.FRONTEND_URL || '').replace(/\/+$/, '');
+const MAIL_FROM = process.env.MAIL_FROM || 'matirodas50@gmail.com';
+const MAIL_FROM_NAME = process.env.MAIL_FROM_NAME || 'ProdByMTR';
+const AVISO_VENTAS_EMAIL = process.env.AVISO_VENTAS_EMAIL || MAIL_FROM;
+const CONTACTO_WHATSAPP = '+595 983 775018';
+const ZONA_HORARIA = 'America/Asuncion';
+
+const faltantes = ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'DATABASE_URL', 'FRONTEND_URL',
+  'MAILJET_API_KEY', 'MAILJET_SECRET_KEY', 'ADMIN_PASSWORD'].filter((k) => !process.env[k]);
+if (faltantes.length) {
+  console.warn(`⚠️  Variables de entorno sin configurar: ${faltantes.join(', ')}`);
+}
+
 const app = express();
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-const mailjet = Mailjet.apiConnect(
-  process.env.MAILJET_API_KEY,
-  process.env.MAILJET_SECRET_KEY
-);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_falta_configurar');
+const mailjet = process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY
+  ? Mailjet.apiConnect(process.env.MAILJET_API_KEY, process.env.MAILJET_SECRET_KEY)
+  : null;
 
-console.log('🚀 Iniciando servidor ProdByMTR...');
-console.log('🔗 Conectando a Neon PostgreSQL...');
-
-// Configuración optimizada para Neon
-const pool = new Pool({
+const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
   connectionTimeoutMillis: 10000,
@@ -28,907 +37,354 @@ const pool = new Pool({
   max: 10
 });
 
-// Verificar conexión PostgreSQL
-(async () => {
+// ==================== BASE DE DATOS ====================
+// Crea la tabla si no existe y agrega columnas que falten. Se puede correr las veces que sea.
+async function prepararBaseDeDatos() {
   try {
-    const client = await pool.connect();
-    await client.query('SELECT NOW()');
-    client.release();
-    console.log('✅ PostgreSQL (Neon) conectado!');
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS pedidos (
+        id SERIAL PRIMARY KEY,
+        producto_id TEXT NOT NULL,
+        producto_nombre TEXT NOT NULL,
+        precio_pagado NUMERIC(10,2) NOT NULL,
+        cliente_email TEXT,
+        stripe_session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        descarga_enviada BOOLEAN NOT NULL DEFAULT false,
+        creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        actualizado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      ALTER TABLE pedidos
+        ADD COLUMN IF NOT EXISTS cliente_email TEXT,
+        ADD COLUMN IF NOT EXISTS descarga_enviada BOOLEAN NOT NULL DEFAULT false,
+        ADD COLUMN IF NOT EXISTS creado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        ADD COLUMN IF NOT EXISTS actualizado_en TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    `);
+    await pool.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS pedidos_stripe_session_id_key ON pedidos (stripe_session_id)'
+    );
+    console.log('✅ Base de datos lista (tabla pedidos)');
   } catch (error) {
-    console.error('❌ Error conectando a PostgreSQL:', error.message);
-    console.log('⚠️  Continuando sin base de datos (solo modo prueba)...');
+    console.error('❌ No se pudo preparar la base de datos:', error.message);
   }
-})();
+}
 
-// ==================== WEBHOOK ====================
-app.post('/api/webhook', express.raw({type: 'application/json'}), async (req, res) => {
-  const sig = req.headers['stripe-signature'];
-  
-  try {
-    const event = stripe.webhooks.constructEvent(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+// ==================== EMAILS ====================
+const fechaHoy = () => new Date().toLocaleDateString('es-PY', { timeZone: ZONA_HORARIA });
 
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object;
-      
-      console.log('💰 PAGO EXITOSO RECIBIDO:');
-      console.log('Session ID:', session.id);
-      console.log('Email:', session.customer_details.email);
-      console.log('Producto:', session.metadata.product_id);
+async function enviarEmailsDeCompra({ email, producto, monto }) {
+  if (!mailjet) {
+    console.warn('⚠️  Mailjet sin configurar: no se envió el email de descarga');
+    return false;
+  }
 
-      try {
-        const pedidoResult = await pool.query(
-          'SELECT * FROM pedidos WHERE stripe_session_id = $1',
-          [session.id]
-        );
-        
-        if (!pedidoResult.rows[0]) {
-          console.log('❌ Pedido no encontrado en PostgreSQL');
-          return res.status(404).json({ error: 'Pedido no encontrado' });
-        }
-
-        const pedido = pedidoResult.rows[0];
-
-        await pool.query(`
-          UPDATE pedidos 
-          SET status = 'completed', 
-              cliente_email = $1,
-              descarga_enviada = true,
-              actualizado_en = NOW()
-          WHERE stripe_session_id = $2
-        `, [session.customer_details.email, session.id]);
-
-        const producto = productos[pedido.producto_id];
-        
-        if (!producto) {
-          console.log('❌ Producto no encontrado');
-          return res.status(404).json({ error: 'Producto no encontrado' });
-        }
-
-        // ENVIAR EMAIL AL CLIENTE
-        await mailjet.post('send', { version: 'v3.1' }).request({
-          Messages: [{
-            From: { Email: 'matirodas50@gmail.com', Name: 'ProdByMTR' },
-            To: [{ Email: session.customer_details.email }],
-            Subject: `✅ Tu compra en ProdByMTR - ${producto.nombre}`,
-            HTMLPart: `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h1 style="color: #635bff;">¡Gracias por tu compra!</h1>
-                <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                  <h2>📦 Detalles de tu compra:</h2>
-                  <p><strong>Producto:</strong> ${producto.nombre}</p>
-                  <p><strong>Precio:</strong> $${pedido.precio_pagado} USD</p>
-                  <p><strong>Fecha:</strong> ${new Date().toLocaleDateString('es-ES', {timeZone: 'America/Asuncion'})}</p>
-                </div>
-                <div style="background: #e7f3ff; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                  <h2>⬇️ Descarga tu producto:</h2>
-                  <a href="${producto.descargaUrl}" 
-                     style="background: #635bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; margin: 10px 0;"
-                     target="_blank">
-                     DESCARGAR AHORA - ${producto.nombre}
-                  </a>
-                  <p style="color: #666; font-size: 14px; margin-top: 10px;">
-                    El enlace es válido por 30 días. Si tenés problemas, contactame.
-                  </p>
-                </div>
-                <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">
-                  <p>¿Necesitás ayuda? Contactame:</p>
-                  <p>📧 Email: matirodas50@gmail.com</p>
-                  <p>📱 WhatsApp: +595983775018</p>
-                </div>
-              </div>
-            `
-          }]
-        });
-
-        // EMAIL A VOS
-        await mailjet.post('send', { version: 'v3.1' }).request({
-          Messages: [{
-            From: { Email: 'matirodas50@gmail.com', Name: 'ProdByMTR' },
-            To: [{ Email: 'matirodas50@gmail.com' }],
-            Subject: `🛒 NUEVA VENTA - ${producto.nombre}`,
-            HTMLPart: `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                <h2>🛒 NUEVA VENTA - ${producto.nombre}</h2>
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; margin: 15px 0;">
-                  <p><strong>Producto:</strong> ${producto.nombre}</p>
-                  <p><strong>Precio:</strong> $${pedido.precio_pagado} USD</p>
-                  <p><strong>Cliente:</strong> ${session.customer_details.email}</p>
-                  <p><strong>Fecha:</strong> ${new Date().toLocaleDateString('es-ES', {timeZone: 'America/Asuncion'})}</p>
-                </div>
-              </div>
-            `
-          }]
-        });
-
-        console.log(`✅ Email enviado a: ${session.customer_details.email}`);
-
-      } catch (dbError) {
-        console.error('❌ Error procesando pedido:', dbError.message);
+  await mailjet.post('send', { version: 'v3.1' }).request({
+    Messages: [
+      {
+        From: { Email: MAIL_FROM, Name: MAIL_FROM_NAME },
+        To: [{ Email: email }],
+        Subject: `Tu descarga de ${producto.nombre} está lista`,
+        HTMLPart: `
+          <div style="font-family: Arial, sans-serif; max-width: 560px; margin: 0 auto; color: #1a1424;">
+            <h1 style="font-size: 24px;">¡Gracias por tu compra!</h1>
+            <p>Compraste <strong>${producto.nombre}</strong> por <strong>$${monto} USD</strong> el ${fechaHoy()}.</p>
+            <p style="margin: 28px 0;">
+              <a href="${producto.descargaUrl}" target="_blank"
+                 style="background: #2ee8c4; color: #1a1424; padding: 14px 26px; text-decoration: none; border-radius: 6px; font-weight: bold;">
+                Descargar ${producto.nombre}
+              </a>
+            </p>
+            <p style="color: #555; font-size: 14px;">Guardá este email: el enlace es tu acceso a la descarga.</p>
+            <hr style="border: none; border-top: 1px solid #ddd; margin: 28px 0;">
+            <p style="font-size: 14px;">¿Problemas con la descarga? Respondé este email o escribime por WhatsApp al ${CONTACTO_WHATSAPP}.</p>
+          </div>
+        `
+      },
+      {
+        From: { Email: MAIL_FROM, Name: MAIL_FROM_NAME },
+        To: [{ Email: AVISO_VENTAS_EMAIL }],
+        Subject: `Nueva venta: ${producto.nombre} ($${monto} USD)`,
+        HTMLPart: `
+          <div style="font-family: Arial, sans-serif;">
+            <h2>Nueva venta</h2>
+            <p><strong>Producto:</strong> ${producto.nombre}</p>
+            <p><strong>Monto:</strong> $${monto} USD</p>
+            <p><strong>Cliente:</strong> ${email}</p>
+            <p><strong>Fecha:</strong> ${fechaHoy()}</p>
+          </div>
+        `
       }
-    }
+    ]
+  });
+  return true;
+}
 
-    res.json({ received: true });
-
+// ==================== WEBHOOK DE STRIPE ====================
+// Va antes de express.json() porque Stripe necesita el cuerpo sin procesar para verificar la firma.
+app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
-    console.log('❌ Error webhook:', err.message);
-    res.status(400).send(`Webhook Error: ${err.message}`);
+    console.error('❌ Firma de webhook inválida:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  const pagoConfirmado =
+    (event.type === 'checkout.session.completed' && event.data.object.payment_status === 'paid') ||
+    event.type === 'checkout.session.async_payment_succeeded';
+
+  if (!pagoConfirmado) return res.json({ received: true });
+
+  const session = event.data.object;
+  const productId = session.metadata?.product_id;
+  const producto = productos[productId];
+  const email = session.customer_details?.email;
+  const monto = ((session.amount_total ?? producto?.precio ?? 0) / 100).toFixed(2);
+
+  if (!producto || !email) {
+    console.error(`❌ Pago ${session.id} sin producto o email válido (producto: ${productId})`);
+    return res.json({ received: true });
+  }
+
+  console.log(`💰 Pago confirmado: ${producto.nombre} - ${email}`);
+
+  // Guarda o actualiza el pedido. Si la base falla, el email se envía igual.
+  let yaEnviado = false;
+  try {
+    const { rows } = await pool.query(
+      `INSERT INTO pedidos (producto_id, producto_nombre, precio_pagado, stripe_session_id, cliente_email, status)
+       VALUES ($1, $2, $3, $4, $5, 'completed')
+       ON CONFLICT (stripe_session_id) DO UPDATE
+         SET status = 'completed', cliente_email = EXCLUDED.cliente_email, actualizado_en = NOW()
+       RETURNING descarga_enviada`,
+      [productId, producto.nombre, monto, session.id, email]
+    );
+    yaEnviado = rows[0]?.descarga_enviada === true;
+  } catch (dbError) {
+    console.error('⚠️  No se pudo guardar el pedido, se envía el email igual:', dbError.message);
+  }
+
+  // Stripe a veces repite el aviso: si ya se mandó la descarga, no se manda dos veces.
+  if (yaEnviado) return res.json({ received: true });
+
+  try {
+    const enviado = await enviarEmailsDeCompra({ email, producto, monto });
+    if (enviado) {
+      await pool.query(
+        'UPDATE pedidos SET descarga_enviada = true, actualizado_en = NOW() WHERE stripe_session_id = $1',
+        [session.id]
+      ).catch((e) => console.error('⚠️  No se pudo marcar la descarga como enviada:', e.message));
+      console.log(`✅ Descarga enviada a ${email}`);
+    }
+    res.json({ received: true });
+  } catch (mailError) {
+    // Responder con error hace que Stripe reintente el aviso más tarde.
+    console.error('❌ Error enviando el email de descarga:', mailError.message);
+    res.status(500).json({ error: 'No se pudo enviar el email' });
   }
 });
 
 // ==================== MIDDLEWARE ====================
+const origenesPermitidos = new Set([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+  ...(process.env.ALLOWED_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean)
+]);
+try {
+  if (FRONTEND_URL) origenesPermitidos.add(new URL(FRONTEND_URL).origin);
+} catch {
+  console.warn('⚠️  FRONTEND_URL no es una dirección válida:', FRONTEND_URL);
+}
+
 app.use(cors({
-  origin: ['https://matirodas50-eng.github.io', 'http://localhost:3000'],
-  credentials: true
+  origin: (origin, callback) => callback(null, !origin || origenesPermitidos.has(origin))
 }));
 app.use(express.json());
 
-// ==================== DATOS DE 9 PRODUCTOS ====================
-const productos = {
-  'drumkit-essential': {
-    nombre: 'DRUMKIT ESSENTIAL',
-    precio: 2500, // $25 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-drumkit'
-  },
-  'vocal-template': {
-    nombre: 'VOCAL CHAIN TEMPLATE', 
-    precio: 1700, // $17 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-vocal'
-  },
-  'plantillas-fl': {
-    nombre: 'PLANTILLAS FL STUDIO',
-    precio: 2900, // $29 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-plantillas'
-  },
-  'cumbia-420': {
-    nombre: 'CUMBIA 420 - DRUMKIT',
-    precio: 1800, // $18 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-cumbia'
-  },
-  'reggaeton-hits': {
-    nombre: 'REGGAETON HITS - DRUMKIT',
-    precio: 2000, // $20 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-reggaeton'
-  },
-  'trap-essentials': {
-    nombre: 'TRAP ESSENTIALS - PACK',
-    precio: 2200, // $22 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-trap'
-  },
-  'synthwave-pop': {
-    nombre: 'SYNTHWAVE & POP - PACK',
-    precio: 2500, // $25 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-synthwave'
-  },
-  'bundle-generos': {
-    nombre: 'BUNDLE DE GÉNEROS',
-    precio: 6500, // $65 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-bundle-generos'
-  },
-  'bundle-completo': {
-    nombre: 'BUNDLE COMPLETO',
-    precio: 9900, // $99 USD
-    descargaUrl: 'https://drive.google.com/tu-enlace-bundle-completo'
+// Protección con usuario y contraseña para el panel y los datos de pedidos.
+function soloAdmin(req, res, next) {
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password) {
+    return res.status(503).send('Panel desactivado: configurá ADMIN_PASSWORD en las variables de entorno.');
   }
-};
+  const [tipo, credenciales] = (req.headers.authorization || '').split(' ');
+  if (tipo === 'Basic' && credenciales) {
+    const [usuario, clave] = Buffer.from(credenciales, 'base64').toString().split(':');
+    if (usuario === (process.env.ADMIN_USER || 'admin') && clave === password) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Panel ProdByMTR", charset="UTF-8"');
+  res.status(401).send('Necesitás usuario y contraseña para ver esta página.');
+}
 
-// ==================== ENDPOINTS ====================
+const escaparHtml = (texto) =>
+  String(texto ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-// 1. Health Check
-app.get('/api/health', async (req, res) => {
-  res.json({ 
-    status: 'OK',
-    service: 'ProdByMTR Backend',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
-  });
+// ==================== ENDPOINTS PÚBLICOS ====================
+app.get('/', (req, res) => res.json({ service: 'ProdByMTR Backend', status: 'OK' }));
+
+// Sirve para despertar el servidor y para monitores de disponibilidad.
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// 2. Warm-up endpoint
-app.get('/api/warmup', (req, res) => {
-  console.log('🔥 Servidor calentado por petición');
-  res.json({ warmed: true, time: new Date().toISOString() });
-});
-
-// 3. Endpoint para crear pago
 app.post('/api/crear-pago', async (req, res) => {
-  console.log('🛒 Recibiendo solicitud de pago...');
-  
-  req.setTimeout(25000);
-  
+  const { productId } = req.body || {};
+  const producto = productos[productId];
+
+  if (!producto) {
+    return res.status(400).json({ success: false, message: 'Ese producto no existe.' });
+  }
+
+  const base = FRONTEND_URL || (req.get('origin') || '').replace(/\/+$/, '');
+
   try {
-    const { productId } = req.body;
-    
-    if (!productos[productId]) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Producto no encontrado' 
-      });
-    }
-
-    const producto = productos[productId];
-
     const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
+      mode: 'payment',
       line_items: [{
         price_data: {
           currency: 'usd',
-          product_data: {
-            name: producto.nombre,
-            description: 'Producto digital - ProdByMTR'
-          },
-          unit_amount: producto.precio,
+          product_data: { name: producto.nombre, description: 'Producto digital de ProdByMTR, descarga por email' },
+          unit_amount: producto.precio
         },
-        quantity: 1,
+        quantity: 1
       }],
-      mode: 'payment',
-      success_url: `${process.env.FRONTEND_URL}/success.html?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${process.env.FRONTEND_URL}/?canceled=true`,
+      allow_promotion_codes: true,
+      success_url: `${base}/?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${base}/?pago=cancelado#productos`,
       metadata: { product_id: productId },
       expires_at: Math.floor(Date.now() / 1000) + 1800
     });
 
-    // Guardar en PostgreSQL
-    try {
-      await pool.query(`
-        INSERT INTO pedidos 
-        (producto_id, producto_nombre, precio_pagado, stripe_session_id, status)
-        VALUES ($1, $2, $3, $4, 'pending')
-      `, [
-        productId,
-        producto.nombre,
-        producto.precio / 100,
-        session.id
-      ]);
-      console.log(`✅ Pedido guardado en PostgreSQL: ${session.id}`);
-    } catch (dbError) {
-      console.warn('⚠️  Pedido NO guardado en DB (modo offline):', dbError.message);
-    }
+    pool.query(
+      `INSERT INTO pedidos (producto_id, producto_nombre, precio_pagado, stripe_session_id, status)
+       VALUES ($1, $2, $3, $4, 'pending') ON CONFLICT (stripe_session_id) DO NOTHING`,
+      [productId, producto.nombre, (producto.precio / 100).toFixed(2), session.id]
+    ).catch((e) => console.warn('⚠️  Pedido pendiente no guardado:', e.message));
 
-    console.log(`✅ Sesión Stripe creada: ${session.id}`);
-    
-    res.json({ 
-      success: true, 
-      sessionId: session.id,
-      message: 'Redirigiendo a Stripe...'
-    });
-
+    console.log(`🛒 Pago iniciado: ${producto.nombre} (${session.id})`);
+    res.json({ success: true, url: session.url, sessionId: session.id });
   } catch (error) {
-    console.error('❌ Error creando pago:', error.message);
-    
-    let statusCode = 500;
-    let errorMessage = error.message;
-    let userMessage = 'Error inesperado. Por favor, intentá de nuevo.';
-    
-    if (error.type === 'StripeConnectionError') {
-      statusCode = 503;
-      userMessage = 'Stripe no responde. Intentá en unos minutos.';
-    } else if (error.code === 'ECONNREFUSED') {
-      statusCode = 503;
-      userMessage = 'Servidor iniciando. Esperá 30 segundos e intentá de nuevo.';
-    }
-    
-    res.status(statusCode).json({ 
-      success: false, 
-      error: errorMessage,
-      message: userMessage
+    console.error('❌ Error creando el pago:', error.message);
+    const sinConexion = error.type === 'StripeConnectionError';
+    res.status(sinConexion ? 503 : 500).json({
+      success: false,
+      message: sinConexion
+        ? 'No se pudo conectar con el sistema de pagos. Probá de nuevo en un minuto.'
+        : 'No se pudo iniciar el pago. Probá de nuevo o escribime por WhatsApp.'
     });
   }
 });
 
-// 4. Verificar estado de sesión
+// Lo usa la pantalla de pago confirmado para mostrar qué se compró y a qué email llega la descarga.
 app.get('/api/verificar-sesion/:sessionId', async (req, res) => {
+  const { sessionId } = req.params;
+  if (!/^cs_[A-Za-z0-9_]+$/.test(sessionId)) {
+    return res.status(400).json({ error: 'Sesión inválida' });
+  }
   try {
-    const session = await stripe.checkout.sessions.retrieve(req.params.sessionId);
-    res.json({ 
-      status: session.payment_status,
-      email: session.customer_details?.email,
-      completed: session.payment_status === 'paid'
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    res.json({
+      completed: session.payment_status === 'paid',
+      email: session.customer_details?.email || null,
+      producto: productos[session.metadata?.product_id]?.nombre || null
     });
-  } catch (error) {
+  } catch {
     res.status(404).json({ error: 'Sesión no encontrada' });
   }
 });
 
-// 5. Ver pedidos
-app.get('/api/pedidos', async (req, res) => {
+// ==================== PANEL DE ADMINISTRACIÓN ====================
+app.get('/api/pedidos', soloAdmin, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT * FROM pedidos 
-      ORDER BY creado_en DESC
-      LIMIT 50
-    `);
-    res.json({ success: true, pedidos: result.rows });
+    const { rows } = await pool.query('SELECT * FROM pedidos ORDER BY creado_en DESC LIMIT 100');
+    res.json({ success: true, pedidos: rows });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// ==================== KEEP-ALIVE INTELIGENTE ====================
-// Mantiene Render activo 24/7 sin pasarse del límite free
-let keepAliveActivado = true;
-let totalPings = 0;
-const MAX_PINGS_MENSUALES = 10000; // ~750 horas de keep-alive
+app.get('/admin/keepalive-panel', (req, res) => res.redirect(301, '/admin'));
 
-function iniciarKeepAlive() {
-  console.log('🔄 Keep-alive inteligente iniciado');
-  console.log(`📊 Límite mensual: ${MAX_PINGS_MENSUALES} pings (~750 horas)`);
-  
-  // Función para hacer ping
-  async function hacerPing() {
-    if (!keepAliveActivado) {
-      return;
-    }
-    
-    totalPings++;
-    
-    // Verificar límite (dejar 10% de margen)
-    if (totalPings >= MAX_PINGS_MENSUALES * 0.9) {
-      console.log('⚠️  ALERTA: Límite mensual al 90% - Pausando keep-alive');
-      keepAliveActivado = false;
-      return;
-    }
-    
-    try {
-      // Ping a la base de datos (mantiene ambas conexiones activas)
-      const client = await pool.connect();
-      await client.query('SELECT 1');
-      client.release();
-      
-      // Log cada 10 pings (~45 minutos)
-      if (totalPings % 10 === 0) {
-        const porcentaje = (totalPings / MAX_PINGS_MENSUALES * 100).toFixed(1);
-        const horasUsadas = ((totalPings * 4.5) / 60).toFixed(1);
-        console.log(`🫀 Keep-alive: ${totalPings}/${MAX_PINGS_MENSUALES} (${porcentaje}%) - ${horasUsadas}h usadas`);
-      }
-      
-    } catch (error) {
-      console.log('⚠️  Keep-alive DB error:', error.message);
-    }
-  }
-  
-  // Ejecutar cada 4.5 minutos (antes de que Render suspenda a los 5min)
-  const intervalo = setInterval(hacerPing, 4.5 * 60 * 1000);
-  
-  // Hacer primer ping inmediato
-  setTimeout(hacerPing, 10000);
-  
-  return intervalo;
-}
+app.get('/admin', soloAdmin, async (req, res) => {
+  const fmt = (n) => `$${Number(n || 0).toFixed(2)}`;
+  const fecha = (d) => new Date(d).toLocaleString('es-PY', { timeZone: ZONA_HORARIA, dateStyle: 'short', timeStyle: 'short' });
 
-// ==================== ENDPOINTS DE CONTROL ====================
-
-// 1. Panel web de control COMPLETO con historial de ventas
-app.get('/admin/keepalive-panel', async (req, res) => {
   try {
-    // Obtener estadísticas de ventas
-    const ventasMes = await pool.query(`
-      SELECT 
-        COUNT(*) as total,
-        SUM(precio_pagado) as ingresos,
-        AVG(precio_pagado) as promedio,
-        MIN(creado_en) as primera,
-        MAX(creado_en) as ultima
-      FROM pedidos 
-      WHERE status = 'completed' 
-      AND creado_en >= DATE_TRUNC('month', NOW())
-    `);
+    const [mes, total, porProducto, ultimos] = await Promise.all([
+      pool.query(`SELECT COUNT(*) AS ventas, COALESCE(SUM(precio_pagado), 0) AS ingresos FROM pedidos
+                  WHERE status = 'completed' AND creado_en >= (DATE_TRUNC('month', NOW() AT TIME ZONE '${ZONA_HORARIA}') AT TIME ZONE '${ZONA_HORARIA}')`),
+      pool.query(`SELECT COUNT(*) AS ventas, COALESCE(SUM(precio_pagado), 0) AS ingresos FROM pedidos WHERE status = 'completed'`),
+      pool.query(`SELECT producto_nombre, COUNT(*) AS cantidad, SUM(precio_pagado) AS total FROM pedidos
+                  WHERE status = 'completed' GROUP BY producto_nombre ORDER BY total DESC`),
+      pool.query(`SELECT producto_nombre, precio_pagado, cliente_email, status, descarga_enviada, creado_en
+                  FROM pedidos ORDER BY creado_en DESC LIMIT 25`)
+    ]);
 
-    // Obtener últimos 10 pedidos
-    const ultimosPedidos = await pool.query(`
-      SELECT producto_nombre, precio_pagado, cliente_email, creado_en
-      FROM pedidos 
-      WHERE status = 'completed'
-      ORDER BY creado_en DESC
-      LIMIT 10
-    `);
+    const filasProductos = porProducto.rows.map((p) => `
+      <tr><td>${escaparHtml(p.producto_nombre)}</td><td>${p.cantidad}</td><td>${fmt(p.total)}</td></tr>`).join('');
 
-    // Ventas por producto
-    const ventasPorProducto = await pool.query(`
-      SELECT producto_nombre, COUNT(*) as cantidad, SUM(precio_pagado) as total
-      FROM pedidos 
-      WHERE status = 'completed'
-      AND creado_en >= DATE_TRUNC('month', NOW())
-      GROUP BY producto_nombre
-      ORDER BY total DESC
-    `);
+    const filasPedidos = ultimos.rows.map((p) => `
+      <tr>
+        <td>${fecha(p.creado_en)}</td>
+        <td>${escaparHtml(p.producto_nombre)}</td>
+        <td>${fmt(p.precio_pagado)}</td>
+        <td>${escaparHtml(p.cliente_email || '—')}</td>
+        <td><span class="estado ${p.status === 'completed' ? 'ok' : ''}">${p.status === 'completed' ? 'Pagado' : 'Sin pagar'}</span></td>
+        <td>${p.status === 'completed' ? (p.descarga_enviada ? 'Enviada' : 'Pendiente') : '—'}</td>
+      </tr>`).join('');
 
-    const porcentaje = (totalPings / MAX_PINGS_MENSUALES * 100).toFixed(2);
-    const horasUsadas = ((totalPings * 4.5) / 60).toFixed(1);
-    const ventasData = ventasMes.rows[0] || { total: 0, ingresos: 0, promedio: 0 };
-
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>🔋 Dashboard ProdByMTR</title>
-        <style>
-          body {
-            background: #000;
-            color: #fff;
-            font-family: Arial, sans-serif;
-            padding: 20px;
-            max-width: 1000px;
-            margin: 0 auto;
-          }
-          .header {
-            text-align: center;
-            margin-bottom: 30px;
-            border-bottom: 2px solid #635bff;
-            padding-bottom: 20px;
-          }
-          .dashboard-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-          }
-          .card {
-            background: #1a1a1a;
-            padding: 25px;
-            border-radius: 10px;
-            border-left: 5px solid #635bff;
-          }
-          .card-keepalive {
-            border-left-color: ${keepAliveActivado ? '#4CAF50' : '#ff9800'};
-          }
-          .card-ventas {
-            border-left-color: #4CAF50;
-          }
-          .card-pedidos {
-            border-left-color: #ff9800;
-          }
-          .card-productos {
-            border-left-color: #9c27b0;
-          }
-          h2 {
-            color: #635bff;
-            margin-bottom: 20px;
-            font-size: 1.5rem;
-          }
-          .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 15px;
-            margin: 20px 0;
-          }
-          .stat-item {
-            background: #222;
-            padding: 15px;
-            border-radius: 8px;
-            text-align: center;
-          }
-          .stat-value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #635bff;
-            margin: 10px 0;
-          }
-          .stat-label {
-            font-size: 12px;
-            color: #888;
-            text-transform: uppercase;
-          }
-          .progress-bar {
-            width: 100%;
-            height: 30px;
-            background: #333;
-            border-radius: 15px;
-            overflow: hidden;
-            margin: 20px 0;
-          }
-          .progress-fill {
-            height: 100%;
-            background: ${porcentaje < 70 ? '#4CAF50' : porcentaje < 90 ? '#ff9800' : '#f44336'};
-            width: ${porcentaje}%;
-            transition: width 0.3s;
-          }
-          .table-container {
-            overflow-x: auto;
-            margin: 20px 0;
-          }
-          table {
-            width: 100%;
-            border-collapse: collapse;
-          }
-          th, td {
-            padding: 12px 15px;
-            text-align: left;
-            border-bottom: 1px solid #333;
-          }
-          th {
-            background: #222;
-            color: #635bff;
-            font-weight: bold;
-          }
-          tr:hover {
-            background: #222;
-          }
-          .controls {
-            text-align: center;
-            margin-top: 30px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            justify-content: center;
-          }
-          .btn {
-            background: #635bff;
-            color: white;
-            border: none;
-            padding: 12px 24px;
-            border-radius: 6px;
-            font-size: 14px;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-block;
-            transition: all 0.3s;
-          }
-          .btn:hover {
-            background: #5a54d9;
-            transform: translateY(-2px);
-          }
-          .btn-pause {
-            background: ${keepAliveActivado ? '#ff9800' : '#4CAF50'};
-          }
-          .btn-small {
-            padding: 8px 16px;
-            font-size: 12px;
-          }
-          .info {
-            color: #888;
-            font-size: 12px;
-            margin-top: 30px;
-            text-align: center;
-            padding-top: 20px;
-            border-top: 1px solid #333;
-          }
-          .badge {
-            background: #4CAF50;
-            color: white;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: bold;
-          }
-          .price {
-            color: #4CAF50;
-            font-weight: bold;
-          }
-          .email {
-            font-size: 12px;
-            color: #888;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            max-width: 200px;
-          }
-          @media (max-width: 768px) {
-            body { padding: 10px; }
-            .card { padding: 15px; }
-            .stat-value { font-size: 20px; }
-          }
-        </style>
-      </head>
-      <body>
-        <div class="header">
-          <h1>📊 Dashboard ProdByMTR</h1>
-          <p>Control completo de tu negocio de producción musical</p>
-        </div>
-        
-        <div class="dashboard-grid">
-          <!-- Card 1: Keep-Alive Status -->
-          <div class="card card-keepalive">
-            <h2>🔋 Keep-Alive Status</h2>
-            <div class="progress-bar">
-              <div class="progress-fill"></div>
-            </div>
-            <div style="text-align: center; margin: 15px 0;">
-              <strong>${porcentaje}%</strong> del límite mensual usado
-              <div style="font-size: 12px; color: #888;">${horasUsadas}h / ~750h mensuales</div>
-            </div>
-            
-            <div class="stats-grid">
-              <div class="stat-item">
-                <div class="stat-label">Pings</div>
-                <div class="stat-value">${totalPings}</div>
-                <div>de ${MAX_PINGS_MENSUALES}</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-label">Estado</div>
-                <div class="stat-value">${keepAliveActivado ? '✅' : '⏸️'}</div>
-                <div>${keepAliveActivado ? 'ACTIVO' : 'PAUSADO'}</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-label">Días Rest.</div>
-                <div class="stat-value">${((750 - parseFloat(horasUsadas)) / 24).toFixed(1)}</div>
-                <div>a 24h/día</div>
-              </div>
-            </div>
-          </div>
-          
-          <!-- Card 2: Ventas del Mes -->
-          <div class="card card-ventas">
-            <h2>💰 Ventas del Mes</h2>
-            <div class="stats-grid">
-              <div class="stat-item">
-                <div class="stat-label">Total Ventas</div>
-                <div class="stat-value">${ventasData.total || 0}</div>
-                <div>pedidos</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-label">Ingresos</div>
-                <div class="stat-value">$${ventasData.ingresos || 0}</div>
-                <div>USD</div>
-              </div>
-              <div class="stat-item">
-                <div class="stat-label">Promedio</div>
-                <div class="stat-value">$${ventasData.promedio ? parseFloat(ventasData.promedio).toFixed(2) : '0.00'}</div>
-                <div>por venta</div>
-              </div>
-            </div>
-            
-            ${ventasData.primera ? `
-              <div style="margin-top: 15px; font-size: 12px; color: #888;">
-                <div>📅 Primera venta: ${new Date(ventasData.primera).toLocaleDateString('es-PY')}</div>
-                <div>📅 Última venta: ${new Date(ventasData.ultima).toLocaleDateString('es-PY')}</div>
-              </div>
-            ` : ''}
-          </div>
-        </div>
-        
-        <!-- Card 3: Últimos Pedidos -->
-        <div class="card card-pedidos">
-          <h2>📦 Últimos 10 Pedidos</h2>
-          ${ultimosPedidos.rows.length > 0 ? `
-            <div class="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Producto</th>
-                    <th>Precio</th>
-                    <th>Cliente</th>
-                    <th>Fecha</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${ultimosPedidos.rows.map(pedido => `
-                    <tr>
-                      <td>${pedido.producto_nombre}</td>
-                      <td class="price">$${pedido.precio_pagado} USD</td>
-                      <td><span class="email" title="${pedido.cliente_email || 'No email'}">${pedido.cliente_email || 'No email'}</span></td>
-                      <td>${new Date(pedido.creado_en).toLocaleDateString('es-PY', { hour: '2-digit', minute: '2-digit' })}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          ` : '<p style="text-align: center; color: #888;">No hay pedidos aún</p>'}
-        </div>
-        
-        <!-- Card 4: Ventas por Producto -->
-        ${ventasPorProducto.rows.length > 0 ? `
-          <div class="card card-productos">
-            <h2>📊 Ventas por Producto (este mes)</h2>
-            <div class="table-container">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Producto</th>
-                    <th>Cantidad</th>
-                    <th>Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${ventasPorProducto.rows.map(producto => `
-                    <tr>
-                      <td>${producto.producto_nombre}</td>
-                      <td><span class="badge">${producto.cantidad}</span></td>
-                      <td class="price">$${parseFloat(producto.total).toFixed(2)} USD</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ` : ''}
-        
-        <div class="controls">
-          <a href="/admin/keepalive-control?action=${keepAliveActivado ? 'pause' : 'resume'}" 
-             class="btn btn-pause">
-             ${keepAliveActivado ? '⏸️ PAUSAR Keep-Alive' : '▶️ REANUDAR Keep-Alive'}
-          </a>
-          <a href="/admin/keepalive-status" class="btn" target="_blank">
-            📊 JSON Status
-          </a>
-          <a href="/api/health" class="btn" target="_blank">
-            ❤️ Health Check
-          </a>
-          <a href="/api/pedidos" class="btn" target="_blank">
-            📦 Todos los Pedidos
-          </a>
-          <a href="https://matirodas50-eng.github.io/prodby-MTR/" class="btn" target="_blank">
-            🎵 Ir a la Tienda
-          </a>
-        </div>
-        
-        <div class="info">
-          <p>📅 Acceso rápido desde tu teléfono: <code>https://prodbymtr-backend.onrender.com/admin/keepalive-panel</code></p>
-          <p>⏰ Última actualización: ${new Date().toLocaleString('es-PY', { timeZone: 'America/Asuncion' })}</p>
-          <p>🔧 Panel automático - Se actualiza cada 60 segundos</p>
-        </div>
-        
-        <script>
-          // Auto-refrescar cada 60 segundos
-          setTimeout(() => location.reload(), 60000);
-          
-          // Formatear números
-          document.addEventListener('DOMContentLoaded', function() {
-            // Formatear precios
-            document.querySelectorAll('.price').forEach(el => {
-              const price = parseFloat(el.textContent.replace(/[^0-9.]/g, ''));
-              if (!isNaN(price)) {
-                el.textContent = '$' + price.toFixed(2) + ' USD';
-              }
-            });
-          });
-        </script>
-      </body>
-      </html>
-    `);
+    res.send(`<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Panel ProdByMTR</title>
+<style>
+  body { margin: 0; background: #1a1424; color: #f2ecf7; font: 15px/1.5 system-ui, sans-serif; padding: 24px 16px; }
+  main { max-width: 960px; margin: 0 auto; }
+  h1 { margin: 0 0 4px; } h2 { margin: 36px 0 12px; font-size: 18px; }
+  .sub { color: #a99bb8; margin: 0 0 24px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .kpi { background: #261d33; border-radius: 10px; padding: 16px; }
+  .kpi b { display: block; font-size: 28px; } .kpi span { color: #a99bb8; }
+  .tabla { overflow-x: auto; background: #261d33; border-radius: 10px; }
+  table { width: 100%; border-collapse: collapse; min-width: 560px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #3a2f4a; }
+  th { color: #a99bb8; font-weight: 600; }
+  .estado { padding: 2px 8px; border-radius: 999px; background: #3a2f4a; font-size: 13px; }
+  .estado.ok { background: #2ee8c4; color: #1a1424; }
+  .vacio { padding: 16px; color: #a99bb8; }
+</style></head>
+<body><main>
+  <h1>Panel ProdByMTR</h1>
+  <p class="sub">Actualizado ${fecha(new Date())}</p>
+  <div class="kpis">
+    <div class="kpi"><span>Ventas este mes</span><b>${mes.rows[0].ventas}</b></div>
+    <div class="kpi"><span>Ingresos este mes</span><b>${fmt(mes.rows[0].ingresos)}</b></div>
+    <div class="kpi"><span>Ventas totales</span><b>${total.rows[0].ventas}</b></div>
+    <div class="kpi"><span>Ingresos totales</span><b>${fmt(total.rows[0].ingresos)}</b></div>
+  </div>
+  <h2>Ventas por producto</h2>
+  <div class="tabla">${filasProductos
+    ? `<table><thead><tr><th>Producto</th><th>Ventas</th><th>Total</th></tr></thead><tbody>${filasProductos}</tbody></table>`
+    : '<p class="vacio">Todavía no hay ventas.</p>'}</div>
+  <h2>Últimos pedidos</h2>
+  <div class="tabla">${filasPedidos
+    ? `<table><thead><tr><th>Fecha</th><th>Producto</th><th>Monto</th><th>Cliente</th><th>Pago</th><th>Descarga</th></tr></thead><tbody>${filasPedidos}</tbody></table>`
+    : '<p class="vacio">Todavía no hay pedidos.</p>'}</div>
+</main></body></html>`);
   } catch (error) {
-    res.send(`
-      <html><body style="background:#000;color:#fff;padding:20px;">
-        <h1>❌ Error cargando dashboard</h1>
-        <p>${error.message}</p>
-        <a href="/admin/keepalive-panel" class="btn">Reintentar</a>
-      </body></html>
-    `);
+    res.status(500).send(`No se pudo cargar el panel: ${escaparHtml(error.message)}`);
   }
 });
 
-// 2. Endpoint JSON para apps
-app.get('/admin/keepalive-status', (req, res) => {
-  const porcentaje = (totalPings / MAX_PINGS_MENSUALES * 100).toFixed(2);
-  res.json({
-    keepAliveActive: keepAliveActivado,
-    totalPings: totalPings,
-    monthlyLimit: MAX_PINGS_MENSUALES,
-    percentageUsed: porcentaje + '%',
-    hoursEquivalent: ((totalPings * 4.5) / 60).toFixed(1) + ' hours',
-    daysLeftAt24h: ((750 - (totalPings * 4.5) / 60) / 24).toFixed(1) + ' days',
-    serverTime: new Date().toLocaleString('es-ES', { timeZone: 'America/Asuncion' }),
-    nextAutoPing: 'in ' + (4.5 - ((Date.now() % (4.5 * 60 * 1000)) / (60 * 1000))).toFixed(1) + ' minutes',
-    recommendation: porcentaje > 90 ? 'PAUSE keep-alive' : porcentaje > 70 ? 'MONITOR closely' : 'OK to continue'
-  });
-});
-
-// 3. Control manual (pausar/reanudar)
-app.post('/admin/keepalive-control', (req, res) => {
-  const action = req.query.action;
-  
-  if (action === 'pause') {
-    keepAliveActivado = false;
-    console.log('⏸️ Keep-alive PAUSADO manualmente');
-    res.json({ 
-      status: 'PAUSED', 
-      message: 'Keep-alive pausado. El servidor se suspenderá después de 15 minutos sin tráfico.',
-      totalPings: totalPings,
-      timestamp: new Date().toISOString()
-    });
-    
-  } else if (action === 'resume') {
-    keepAliveActivado = true;
-    console.log('▶️ Keep-alive REANUDADO manualmente');
-    res.json({ 
-      status: 'ACTIVE', 
-      message: 'Keep-alive reanudado. El servidor se mantendrá activo.',
-      totalPings: totalPings,
-      timestamp: new Date().toISOString()
-    });
-    
-  } else {
-    res.status(400).json({ error: 'Acción no válida. Usa ?action=pause o ?action=resume' });
-  }
-});
-
-// 4. Endpoint de estadísticas avanzadas
-app.get('/admin/stats-detailed', async (req, res) => {
-  try {
-    const ventasMes = await pool.query(`
-      SELECT 
-        COUNT(*) as total_pedidos,
-        SUM(precio_pagado) as ingresos_totales,
-        AVG(precio_pagado) as promedio_venta,
-        MIN(creado_en) as primera_venta,
-        MAX(creado_en) as ultima_venta
-      FROM pedidos 
-      WHERE status = 'completed'
-    `);
-
-    const ventasPorProducto = await pool.query(`
-      SELECT producto_nombre, COUNT(*) as cantidad, SUM(precio_pagado) as total
-      FROM pedidos 
-      WHERE status = 'completed'
-      AND creado_en >= DATE_TRUNC('month', NOW())
-      GROUP BY producto_nombre
-      ORDER BY total DESC
-    `);
-
-    res.json({
-      keepAlive: {
-        active: keepAliveActivado,
-        pings: totalPings,
-        limit: MAX_PINGS_MENSUALES,
-        percentage: (totalPings / MAX_PINGS_MENSUALES * 100).toFixed(2) + '%'
-      },
-      ventas_mes: ventasMes.rows[0] || {},
-      ventas_por_producto: ventasPorProducto.rows,
-      servidor: {
-        uptime: process.uptime() + ' seconds',
-        memory: process.memoryUsage(),
-        time: new Date().toISOString()
-      }
-    });
-    
-  } catch (error) {
-    res.json({ error: error.message });
-  }
-});
-
-// 5. Endpoint de alertas de ventas
-app.get('/admin/alerta-ventas', async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT COUNT(*) as ventas_mes 
-      FROM pedidos 
-      WHERE status = 'completed' 
-      AND creado_en >= DATE_TRUNC('month', NOW())
-    `);
-    
-    const ventas = parseInt(result.rows[0].ventas_mes);
-    
-    // Alerta si hay 5+ ventas este mes (considerar upgrade)
-    if (ventas >= 5) {
-      console.log('🚀 ¡Alerta! 5+ ventas este mes - Considera upgrade a Render Basic ($7/mes)');
-    }
-    
-    res.json({ 
-      ventas_este_mes: ventas,
-      recomendacion: ventas >= 5 ? 'Considera upgrade a Render Basic ($7/mes) para mejor performance' : 'OK en free tier'
-    });
-    
-  } catch (error) {
-    res.json({ error: error.message, ventas_este_mes: 0 });
-  }
-});
-
-// ==================== INICIAR SERVIDOR ====================
-const PORT = process.env.PORT || 3001;
-
+// ==================== INICIAR ====================
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
-  console.log(`💳 Stripe: ${process.env.STRIPE_SECRET_KEY?.includes('test') ? 'MODO TEST' : 'MODO LIVE'}`);
-  console.log(`🌍 Frontend: ${process.env.FRONTEND_URL}`);
-  console.log(`⏰ Hora servidor: ${new Date().toLocaleString('es-ES', {timeZone: 'America/Asuncion'})}`);
-  console.log('✅ Listo para recibir pagos!');
-  console.log(`📦 Productos cargados: ${Object.keys(productos).length}`);
-  
-  // Iniciar keep-alive después de 30 segundos
-  setTimeout(() => {
-    iniciarKeepAlive();
-    console.log('🔋 Keep-alive inteligente configurado');
-    console.log('📊 Panel de control: https://prodbymtr-backend.onrender.com/admin/keepalive-panel');
-    console.log('📊 Estadísticas: https://prodbymtr-backend.onrender.com/admin/keepalive-status');
-    console.log('💰 Alertas ventas: https://prodbymtr-backend.onrender.com/admin/alerta-ventas');
-    
-    // Verificar si es primer día del mes para resetear contador
-    const hoy = new Date();
-    if (hoy.getDate() === 1) {
-      totalPings = 0;
-      console.log('🔄 Primer día del mes - Contador keep-alive reiniciado');
-    }
-  }, 30000);
+  console.log(`🚀 ProdByMTR backend en el puerto ${PORT}`);
+  console.log(`💳 Stripe en ${process.env.STRIPE_SECRET_KEY?.startsWith('sk_live') ? 'MODO REAL' : 'MODO PRUEBA'}`);
+  console.log(`🌍 Frontend: ${FRONTEND_URL || '(sin configurar)'}`);
+  console.log(`📦 Productos: ${Object.keys(productos).length}`);
+  prepararBaseDeDatos();
 });
