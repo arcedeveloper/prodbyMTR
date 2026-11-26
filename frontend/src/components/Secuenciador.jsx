@@ -108,7 +108,7 @@ export default function Secuenciador() {
   }, []);
 
   return (
-    <div className="rounded-[22px] border border-linea bg-panel p-[clamp(16px,2.5vw,28px)] shadow-[0_30px_80px_-30px_rgb(0_0_0/0.7),inset_0_1px_0_rgb(255_255_255/0.05)]">
+    <div className="rounded-[22px] border border-white/10 bg-panel/70 backdrop-blur-xl p-[clamp(16px,2.5vw,28px)] shadow-[0_30px_80px_-30px_rgb(0_0_0/0.7),inset_0_1px_0_rgb(255_255_255/0.05)]">
       <div className="mb-5 flex items-center justify-between gap-4">
         <div>
           <p className="titulo text-lg">Patrón dembow</p>

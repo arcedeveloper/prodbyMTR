@@ -1,3 +1,4 @@
+import fondo from '../assets/fondo-estudio.webp';
 import { Marca } from './Header.jsx';
 
 const redes = [
@@ -9,7 +10,11 @@ const redes = [
 
 export default function Footer() {
   return (
-    <footer id="contacto" className="border-t border-linea pt-14 pb-8">
+    <footer id="contacto" className="relative isolate overflow-hidden border-t border-linea pt-14 pb-8">
+      <div aria-hidden="true" className="absolute inset-0 -z-10">
+        <img src={fondo} alt="" loading="lazy" className="size-full object-cover opacity-35" />
+        <div className="absolute inset-0" style={{ backgroundImage: 'linear-gradient(0deg, rgb(26 20 36 / 0.55), var(--color-noche) 85%)' }} />
+      </div>
       <div className="contenedor flex flex-wrap items-start justify-between gap-7">
         <div>
           <p className="text-[1.75rem]"><Marca /></p>
